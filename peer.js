@@ -109,9 +109,9 @@ function removeSocketByID(socketID) {
 	}
 }
 
-function checkDuplicateSocketConnectionByID(socket) {
+function checkDuplicateSocketConnectionByID(socketID) {
 	for (var i in neighbours) {
-		if (neighbours[i].id == socket.id) {
+		if (neighbours[i].id == socketID) {
 			return true
 		}
 	}
@@ -140,7 +140,7 @@ function manageSocket(socket, host, port, forcefully) {
 	    //already established a connection with the peer with this host and port
 	    //In this case, different from recovering from a reconnection, socket id is 
 	    //different
-	    if (checkDuplicateSocketConnectionByAddr(host, port) && !checkDuplicateSocketConnectionByID(socket)) {
+	    if (checkDuplicateSocketConnectionByAddr(host, port) && !checkDuplicateSocketConnectionByID(socket.id)) {
 	    	socket.disconnect()
 	    	return
 	    }
@@ -150,7 +150,7 @@ function manageSocket(socket, host, port, forcefully) {
 	    //In another case where this peer acting as a client loses network
 	    //connection, and then the network connection comes back, 
 	    //this peer should also avoid adding the duplicate socket again.
-	    if (!checkDuplicateSocketConnectionByID(socket)) {
+	    if (!checkDuplicateSocketConnectionByID(socket.id)) {
 	    	neighbours.push(socket)
 	    }
 
@@ -170,7 +170,7 @@ function manageSocket(socket, host, port, forcefully) {
 	socket.on('reconnect_failed', function() {
         console.log('reconnect_failed')
 
-        removeSocketByID(socket.id)
+        handleDisconnection(socket)
     })
 
     socket.on('notify', function(msg) {
@@ -227,9 +227,51 @@ function checkDuplicateSocketConnectionByAddr(host, port) {
 	return false
 }
 
+//Notice: the indexArr should contain index in the ascending order
+function removeElementsFromArr(indexArr, arr) {
+	for (var i = indexArr.length - 1; i >= 0; i--) {
+		arr.splice(indexArr[i], 1)
+	}
+}
+
+function deletePacketsInOutstandingPackets(peerAddr) {
+	var removePacketsFromIndex = []
+
+	for (var i = 0; i < outstandingPackets.length; i++) {
+		if (outstandingPackets[i].waitForPeer == peerAddr) {
+			removePacketsFromIndex.push(i)
+		}
+	}
+
+	removeElementsFromArr(removePacketsFromIndex, outstandingPackets)
+}
+
+function checkAndDeletePacketsInDesiredPackets(peerAddr) {
+	var removePacketsFromIndex = []
+
+	for (var i = 0; i < desiredPackets.length; i++) {
+		var index = _.indexOf(desiredPackets[i].intermediates, peerAddr)
+		if (index == -1) {
+			continue
+		}
+		if (desiredPackets[i].intermediates.length == 1) {
+			removePacketsFromIndex.push(i)
+		} else {
+			desiredPackets[i].intermediates.splice(index, 1)
+		}
+	}
+
+	removeElementsFromArr(removePacketsFromIndex, desiredPackets)
+}
+
 //Once disconnecting, remove the socket immediately
-function handleDisconnectionAsServer(serverSocket) {
-	removeSocketByID(serverSocket.id)
+function handleDisconnection(socket) {
+	removeSocketByID(socket.id)
+	//Here we use "+ ''" to convert the port value to string, 
+	//if the port value is a number(this can happen when handleDisconnection is called in a client peer)
+	//_.indexOf() requires this.
+	deletePacketsInOutstandingPackets(socket.port + '')
+	checkAndDeletePacketsInDesiredPackets(socket.port + '')
 }
 
 //Notice that the initial notification message has 
@@ -313,9 +355,9 @@ function checkNeighbourNum() {
 
 
 var availablePackets = []		//My window of availability
-var desiredPackets = []			//All desired packets, and in the neighbour's window of availability
-var myPackets = []				//Packets destinated to me   
+var desiredPackets = []			//All desired packets, and in the neighbour's window of availability  
 var outstandingPackets = []		//Outstanding packets being requested from neighbours
+var myPackets = []				//Packets destinated to me 
 
 function findIndexInAvailablePacketList(packetMsg) {
 	for (var i = 0; i < availablePackets.length; i++) {
@@ -509,12 +551,12 @@ serverIO.on('connection', function (serverSocket) {
 		handleInitialNotificationRes(msg, serverSocket.port)
 	})
 	//The other side might be down or, 
-	//this peer acting as a server loses partial network
-	//connection(network partition), but can still connection to
-	//some neighbours or,
+	//this peer (acting as a server) loses partial network
+	//connection, but can still connection to
+	//some neighbours (network partition) or,
 	//this peer loses all network connections
 	serverSocket.on('disconnect', function () {
-		handleDisconnectionAsServer(serverSocket)
+		handleDisconnection(serverSocket)
 	})
 })
 
@@ -558,6 +600,10 @@ function sendData() {
 
 // setTimeout(sendData, 5000)
 
+// for (var i = 0; i < numOfPackets; i++) {
+// 	setTimeout(sendData, sendInterval * i)
+// }
+
 for (var i = 0; i < numOfPackets; i++) {
-	setTimeout(sendData, sendInterval * i)
+	sendData()
 }
