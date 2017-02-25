@@ -89,11 +89,11 @@ function getFromDHT(DHTNode, DHTSeed, key, callback) {
 
 
 
-function identifySocket(socket) {
+function identifySocket(socketID) {
 	var index = undefined
 
 	for (var i = 0; i < neighbours.length; i++) {
-		if (neighbours[i].id == socket.id) {
+		if (neighbours[i].id == socketID) {
 			index = i
 		}
 	}
@@ -101,8 +101,8 @@ function identifySocket(socket) {
 	return index
 }
 
-function removeSocket(socket) {
-	var index = identifySocket(socket)
+function removeSocketByID(socketID) {
+	var index = identifySocket(socketID)
 
 	if (index != undefined) {
 		neighbours.splice(index, 1)
@@ -117,6 +117,17 @@ function checkDuplicateSocketConnectionByID(socket) {
 	}
 	return false
 }
+
+function peerInfoResponse(res) {
+	if (res.errMsg != undefined) {
+    	console.log(res.errMsg)
+
+    	removeSocketByID(res.socketID)
+    } else {
+    	handleInitialNotification(res)
+    }
+}
+
 
 function manageSocket(socket, host, port, forcefully) {
 	socket.on('connect', function() {
@@ -146,24 +157,20 @@ function manageSocket(socket, host, port, forcefully) {
 	    //No matter whether this is a initial connection attempt or
 	    //a reconnection attempt(server loses the socket info after crashing), 
 	    //this peer should send its info to the peer server
+	    //However, we don't send available packets now, because we don't know 
+	    //whether this connection would be accepted by the other side
 	    var peerInfo = {
 	    	'host': 'localhost',
 	    	'port': serverIOPort,
 	    	'forcefully': forcefully
 	    }
-	    socket.emit('peerInfo', peerInfo)
+	    socket.emit('peerInfo', peerInfo, peerInfoResponse)
 	})
 
 	socket.on('reconnect_failed', function() {
         console.log('reconnect_failed')
 
-        removeSocket(socket)
-    })
-
-    socket.on('err', function(msg) {
-    	console.log(msg.errMsg)
-
-    	removeSocket(socket)
+        removeSocketByID(socket.id)
     })
 
     socket.on('notify', function(msg) {
@@ -222,25 +229,64 @@ function checkDuplicateSocketConnectionByAddr(host, port) {
 
 //Once disconnecting, remove the socket immediately
 function handleDisconnectionAsServer(serverSocket) {
-	removeSocket(serverSocket)
+	removeSocketByID(serverSocket.id)
 }
 
-function handlePeerInfoAsServer(msg, serverSocket) {
+//Notice that the initial notification message has 
+//a list of available packets header without intermediate 
+//field, because the response has a separate socketID field
+function generateInitialNotificationMsg() {
+	var initialNotificationMsg = []
+
+	for (var i in availablePackets) {
+		initialNotificationMsg.push(availablePackets[i].header)
+	}
+
+	return initialNotificationMsg
+}
+
+function handleInitialNotificationRes(peerAvailablePacketsMsg, peerAddr) {
+	for (var i in peerAvailablePacketsMsg) {
+		//Add intermediate to the packet just for the convenience of handling this packet
+		peerAvailablePacketsMsg[i].intermediate = peerAddr
+		HandleNotify(peerAvailablePacketsMsg[i])
+	}
+}
+
+function handlePeerInfoAsServer(msg, serverSocket, callback) {
+	var res = {
+		'socketID': serverSocket.id
+	}
 	//If this is not a forceful connection and current number of neighbours is more than 
 	//the limit number, this connection would be closed
 	if (neighbours.length >= approximateLimitOfNeighbours && msg.forcefully == undefined) {
-		serverSocket.emit('err', {'errMsg': 'Sorry, exceed maximum connections'})
+		res.errMsg = 'Sorry, exceed maximum connections'
+		callback(res)
 		serverSocket.disconnect()
 	}
 	//If this peer (acted as a client) has connected to the server voluntarily before, 
 	//this peer would refuse the connection
 	else if(checkDuplicateSocketConnectionByAddr(msg.host, msg.port)) {
-		serverSocket.emit('err', {'errMsg': 'Duplicate Socket Connection'})
+		res.errMsg = 'Duplicate Socket Connection'
+		callback(res)
 		serverSocket.disconnect()
 	} else {
 		serverSocket.host = msg.host
 		serverSocket.port = msg.port
 		neighbours.push(serverSocket)
+
+		//Notify the new neighbour all the available packets this peer has.
+		//This method might cause unnecessary transmission of
+		//all available packets info, if the connection between the client 
+		//peer and the server peer is intermittent.
+		//However, in the case of short network partitions, 
+		//this transmission is also necessary
+		res.availablePacketsMsg = generateInitialNotificationMsg()
+		//serverIOPort is sent in the callback so that another side
+		//can handle notify
+		res.peerAddr = serverIOPort
+
+		callback(res)
 	}
 }
 
@@ -267,9 +313,48 @@ function checkNeighbourNum() {
 
 
 var availablePackets = []		//My window of availability
-var desiredPackets = []			//All desired packets, and in the neighbor's window of availability
+var desiredPackets = []			//All desired packets, and in the neighbour's window of availability
 var myPackets = []				//Packets destinated to me   
 var outstandingPackets = []		//Outstanding packets being requested from neighbours
+
+function findIndexInAvailablePacketList(packetMsg) {
+	for (var i = 0; i < availablePackets.length; i++) {
+		if (availablePackets[i].header.source == packetMsg.source && availablePackets[i].header.sequenceNumber == packetMsg.sequenceNumber) {
+			return i
+		}
+	}
+	return -1
+}
+
+function sendInitialNotification(peerAvailablePacketsMsg, socketID) {
+	var initialNotificationList = []
+
+	for (var i in availablePackets) {
+		var index = findIndexInPacketList(peerAvailablePacketsMsg, availablePackets[i].header)
+		if (index == -1) {
+			initialNotificationList.push(availablePackets[i].header)
+		}	
+	}
+
+	var neighbourIndex = identifySocket(socketID)
+	neighbours[neighbourIndex].emit('initialNotificationRes', initialNotificationList)
+	
+}
+
+function handleInitialNotification(initialNotification) {
+	var peerAddr = initialNotification.peerAddr
+	var socketID = initialNotification.socketID
+	var availablePacketsMsg = initialNotification.availablePacketsMsg
+
+	for (var i in availablePacketsMsg) {
+		//Add intermediate to the packet just for the convenience of handling this packet
+		availablePacketsMsg[i].intermediate = peerAddr
+		HandleNotify(availablePacketsMsg[i])
+		delete availablePacketsMsg[i].intermediate
+	}
+
+	sendInitialNotification(availablePacketsMsg, socketID)
+}
 
 function checkDesiredPackets(msg) {
 	var intermediate = msg.intermediate
@@ -288,15 +373,6 @@ function checkDesiredPackets(msg) {
 	delete desiredPackets[length - 1].intermediate
 }
 
-function findIndexInAvailablePacketList(packetMsg) {
-	for (var i = 0; i < availablePackets.length; i++) {
-		if (availablePackets[i].header.source == packetMsg.source && availablePackets[i].header.sequenceNumber == packetMsg.sequenceNumber) {
-			return i
-		}
-	}
-	return -1
-}
-
 //For now, we handle notify by looking at 
 //availablePackets and desiredPackets
 function HandleNotify(msg) {
@@ -309,7 +385,7 @@ function HandleNotify(msg) {
 	checkDesiredPackets(msg)
 }
 
-function Notify(msg) {
+function notifyAllNeighbours(msg) {
 	//This peer acts as an intermediate node for this packet
 	msg.intermediate = serverIOPort
 
@@ -337,7 +413,7 @@ function sendToStream(data) {
 	}
 	availablePackets.push(packet)
 
-	Notify(_.clone(metadata))
+	notifyAllNeighbours(_.clone(metadata))
 }
 
 function HandleRequest(packetMsg, callback) {
@@ -371,31 +447,34 @@ function responseFromRequestData(data) {
 
 		availablePackets.push(data)
 
-		Notify(_.clone(data.header))
+		notifyAllNeighbours(_.clone(data.header))
 	}
 }
 
-function Request(packet) {
-	// if (packet.intermediates.length == 1) {
-		var outstandingPacket = deepCloneObject(packet)
-
-		for (var i in neighbours) {
-			if (neighbours[i].port == packet.intermediates[0]) {
-				delete outstandingPacket.intermediates
-
-				neighbours[i].emit('request', outstandingPacket, responseFromRequestData)
-
-				outstandingPacket.waitForPeer = neighbours[i].port
-				outstandingPackets.push(outstandingPacket)
-			}
-		}
-	// }
-}
 
 function deepCloneObject(object) {
 	return JSON.parse(JSON.stringify(object))
 }
 
+function Request(packet) {
+	// if (packet.intermediates.length == 1) {
+		var requestingPacket = deepCloneObject(packet)
+
+		for (var i in neighbours) {
+			if (neighbours[i].port == packet.intermediates[0]) {
+				delete requestingPacket.intermediates
+
+				neighbours[i].emit('request', requestingPacket, responseFromRequestData)
+
+				requestingPacket.waitForPeer = neighbours[i].port
+				outstandingPackets.push(requestingPacket)
+			}
+		}
+	// }
+}
+
+//Request all the packets that are in the desired packet list, 
+//but not in the outstanding packet list
 function checkAndRequest() {
 	for (var i in desiredPackets) {
 		//Avoid sending requests for the same packet to multiple peers
@@ -423,12 +502,17 @@ serverIO.on('connection', function (serverSocket) {
 	serverSocket.on('request', function (msg, callback) {
 		HandleRequest(msg, callback)
 	})
-	serverSocket.on('peerInfo', function (msg) {
-		handlePeerInfoAsServer(msg, serverSocket)
+	serverSocket.on('peerInfo', function (msg, callback) {
+		handlePeerInfoAsServer(msg, serverSocket, callback)
 	})
-	//The client side peer might be down or 
-	//this peer acting as a server loses network
-	//connection
+	serverSocket.on('initialNotificationRes', function (msg) {
+		handleInitialNotificationRes(msg, serverSocket.port)
+	})
+	//The other side might be down or, 
+	//this peer acting as a server loses partial network
+	//connection(network partition), but can still connection to
+	//some neighbours or,
+	//this peer loses all network connections
 	serverSocket.on('disconnect', function () {
 		handleDisconnectionAsServer(serverSocket)
 	})
@@ -475,5 +559,5 @@ function sendData() {
 // setTimeout(sendData, 5000)
 
 for (var i = 0; i < numOfPackets; i++) {
-	setTimeout(sendData, sendInterval * (i + 1))
+	setTimeout(sendData, sendInterval * i)
 }
