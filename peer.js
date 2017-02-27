@@ -8,7 +8,7 @@ var _ = require('underscore')
 
 const serverIOPort = process.argv[2]
 
-const checkAndRequestInterval = 5000
+const checkAndRequestInterval = 4000
 
 const approximateLimitOfNeighbours = 5
 
@@ -41,20 +41,12 @@ function createStreamMeta() {
 	for (var i = 0; i < numOfPeers; i++) {
 		var peerAddr = {
 			'host': 'localhost',
-			'port': basePort + difference * i
+			'port': basePort + difference * i,
+			'peerID': createHash((basePort + difference * i) + '')
 		}
 		streamMeta.memberList.push(peerAddr)
 	}
 }
-
-function createHash(dataToHash) {
-	var hash = crypto.createHash('sha256')
-	hash.update(dataToHash)
-	return hash.digest('hex')
-}
-
-
-
 
 
 
@@ -129,18 +121,17 @@ function peerInfoResponse(res) {
 }
 
 
-function manageSocket(socket, host, port, forcefully) {
+function manageSocket(socket, peerID, forcefully) {
 	socket.on('connect', function() {
 	    console.log('connect')
 
-	    socket.host = host
-	    socket.port = port
+	    socket.peerID = peerID
 
 	    //There might be a case where this peer(acting as server) has
-	    //already established a connection with the peer with this host and port
+	    //already established a connection with the peer
 	    //In this case, different from recovering from a reconnection, socket id is 
 	    //different
-	    if (checkDuplicateSocketConnectionByAddr(host, port) && !checkDuplicateSocketConnectionByID(socket.id)) {
+	    if (checkDuplicateSocketConnectionByPeerID(peerID) && !checkDuplicateSocketConnectionByID(socket.id)) {
 	    	socket.disconnect()
 	    	return
 	    }
@@ -160,8 +151,7 @@ function manageSocket(socket, host, port, forcefully) {
 	    //However, we don't send available packets now, because we don't know 
 	    //whether this connection would be accepted by the other side
 	    var peerInfo = {
-	    	'host': 'localhost',
-	    	'port': serverIOPort,
+	    	'peerID': myID,
 	    	'forcefully': forcefully
 	    }
 	    socket.emit('peerInfo', peerInfo, peerInfoResponse)
@@ -189,7 +179,7 @@ function getPeerURL(host, port) {
 function connectToNeighboursVoluntarily(memberList, forcefully) {
 	shuffle(memberList)
 
-	//Only try these times
+	//Only try these amoount of times
 	var connectTimes = approximateLimitOfNeighbours - neighbours.length
 
 	for (var i = 0; i < connectTimes; i++) {
@@ -198,10 +188,11 @@ function connectToNeighboursVoluntarily(memberList, forcefully) {
 		}
 
 		var member = memberList[i]
-		var host = member.host
-		var port = member.port
+		var peerHost = member.host
+		var peerPort = member.port
+		var peerID = member.peerID
 
-		if (host == 'localhost' && port == serverIOPort) {
+		if (peerID == myID) {
 			continue
 		}
 
@@ -209,18 +200,17 @@ function connectToNeighboursVoluntarily(memberList, forcefully) {
 			'reconnectionAttempts': 5,
 			'reconnectionDelay': 4000
 		}
-		var socket = clientIO.connect(getPeerURL(host, port), options)
-		manageSocket(socket, host, port, forcefully)
+		var socket = clientIO.connect(getPeerURL(peerHost, peerPort), options)
+		manageSocket(socket, peerID, forcefully)
 	}
 }
 
-function checkDuplicateSocketConnectionByAddr(host, port) {
+function checkDuplicateSocketConnectionByPeerID(peerID) {
 	for (var i in neighbours) {
 		var socket = neighbours[i]
-		var socketHost = socket.host
-		var socketPort = socket.port
+		var connectedPeer = socket.peerID
 
-		if (host == socketHost && port == socketPort) {
+		if (peerID == connectedPeer) {
 			return true
 		}
 	}
@@ -234,11 +224,11 @@ function removeElementsFromArr(indexArr, arr) {
 	}
 }
 
-function deletePacketsInOutstandingPackets(peerAddr) {
+function deletePacketsInOutstandingPackets(peerID) {
 	var removePacketsFromIndex = []
 
 	for (var i = 0; i < outstandingPackets.length; i++) {
-		if (outstandingPackets[i].waitForPeer == peerAddr) {
+		if (outstandingPackets[i].waitForPeer == peerID) {
 			removePacketsFromIndex.push(i)
 		}
 	}
@@ -246,11 +236,20 @@ function deletePacketsInOutstandingPackets(peerAddr) {
 	removeElementsFromArr(removePacketsFromIndex, outstandingPackets)
 }
 
-function checkAndDeletePacketsInDesiredPackets(peerAddr) {
+function findIndexInIntermediatesOfDesiredPackets(intermediates, peerID) {
+	for (var i = 0; i < intermediates.length; i++) {
+		if (intermediates[i] == peerID) {
+			return i
+		}
+	}
+	return -1
+}
+
+function checkAndDeletePacketsInDesiredPackets(peerID) {
 	var removePacketsFromIndex = []
 
 	for (var i = 0; i < desiredPackets.length; i++) {
-		var index = _.indexOf(desiredPackets[i].intermediates, peerAddr)
+		var index = findIndexInIntermediatesOfDesiredPackets(desiredPackets[i].intermediates, peerID)
 		if (index == -1) {
 			continue
 		}
@@ -264,14 +263,12 @@ function checkAndDeletePacketsInDesiredPackets(peerAddr) {
 	removeElementsFromArr(removePacketsFromIndex, desiredPackets)
 }
 
-//Once disconnecting, remove the socket immediately
+//Once disconnecting, remove the socket immediately,
+//but notice the sequence of operations here
 function handleDisconnection(socket) {
+	deletePacketsInOutstandingPackets(socket.peerID)
+	checkAndDeletePacketsInDesiredPackets(socket.peerID)
 	removeSocketByID(socket.id)
-	//Here we use "+ ''" to convert the port value to string, 
-	//if the port value is a number(this can happen when handleDisconnection is called in a client peer)
-	//_.indexOf() requires this.
-	deletePacketsInOutstandingPackets(socket.port + '')
-	checkAndDeletePacketsInDesiredPackets(socket.port + '')
 }
 
 //Notice that the initial notification message has 
@@ -287,10 +284,10 @@ function generateInitialNotificationMsg() {
 	return initialNotificationMsg
 }
 
-function handleInitialNotificationRes(peerAvailablePacketsMsg, peerAddr) {
+function handleInitialNotificationRes(peerAvailablePacketsMsg, peerID) {
 	for (var i in peerAvailablePacketsMsg) {
 		//Add intermediate to the packet just for the convenience of handling this packet
-		peerAvailablePacketsMsg[i].intermediate = peerAddr
+		peerAvailablePacketsMsg[i].intermediate = peerID
 		HandleNotify(peerAvailablePacketsMsg[i])
 	}
 }
@@ -303,18 +300,19 @@ function handlePeerInfoAsServer(msg, serverSocket, callback) {
 	//the limit number, this connection would be closed
 	if (neighbours.length >= approximateLimitOfNeighbours && msg.forcefully == undefined) {
 		res.errMsg = 'Sorry, exceed maximum connections'
+		//Notice the sequence of callback and disconnect
 		callback(res)
 		serverSocket.disconnect()
 	}
 	//If this peer (acted as a client) has connected to the server voluntarily before, 
 	//this peer would refuse the connection
-	else if(checkDuplicateSocketConnectionByAddr(msg.host, msg.port)) {
+	else if(checkDuplicateSocketConnectionByPeerID(msg.peerID)) {
 		res.errMsg = 'Duplicate Socket Connection'
+		//Notice the sequence of callback and disconnect
 		callback(res)
 		serverSocket.disconnect()
 	} else {
-		serverSocket.host = msg.host
-		serverSocket.port = msg.port
+		serverSocket.peerID = msg.peerID
 		neighbours.push(serverSocket)
 
 		//Notify the new neighbour all the available packets this peer has.
@@ -324,9 +322,9 @@ function handlePeerInfoAsServer(msg, serverSocket, callback) {
 		//However, in the case of short network partitions, 
 		//this transmission is also necessary
 		res.availablePacketsMsg = generateInitialNotificationMsg()
-		//serverIOPort is sent in the callback so that another side
+		//myID is sent in the callback so that another side
 		//can handle notify
-		res.peerAddr = serverIOPort
+		res.peerID = myID
 
 		callback(res)
 	}
@@ -384,13 +382,13 @@ function sendInitialNotification(peerAvailablePacketsMsg, socketID) {
 }
 
 function handleInitialNotification(initialNotification) {
-	var peerAddr = initialNotification.peerAddr
+	var peerID = initialNotification.peerID
 	var socketID = initialNotification.socketID
 	var availablePacketsMsg = initialNotification.availablePacketsMsg
 
 	for (var i in availablePacketsMsg) {
 		//Add intermediate to the packet just for the convenience of handling this packet
-		availablePacketsMsg[i].intermediate = peerAddr
+		availablePacketsMsg[i].intermediate = peerID
 		HandleNotify(availablePacketsMsg[i])
 		delete availablePacketsMsg[i].intermediate
 	}
@@ -429,33 +427,11 @@ function HandleNotify(msg) {
 
 function notifyAllNeighbours(msg) {
 	//This peer acts as an intermediate node for this packet
-	msg.intermediate = serverIOPort
+	msg.intermediate = myID
 
 	for (var i in neighbours) {
 		neighbours[i].emit('notify', msg)
 	}
-}
-
-function createMetadata() {
-	var metadata = {
-		'timestamp': new Date(),
-		'source': serverIOPort,
-		'destination': 'all',
-		'sequenceNumber': sequenceNumber++
-	}
-
-	return metadata
-}
-
-function sendToStream(data) {
-	var metadata = createMetadata()
-	var packet = {
-		'header': metadata,
-		'data': data
-	}
-	availablePackets.push(packet)
-
-	notifyAllNeighbours(_.clone(metadata))
 }
 
 function HandleRequest(packetMsg, callback) {
@@ -503,12 +479,12 @@ function Request(packet) {
 		var requestingPacket = deepCloneObject(packet)
 
 		for (var i in neighbours) {
-			if (neighbours[i].port == packet.intermediates[0]) {
+			if (neighbours[i].peerID == packet.intermediates[0]) {
 				delete requestingPacket.intermediates
 
 				neighbours[i].emit('request', requestingPacket, responseFromRequestData)
 
-				requestingPacket.waitForPeer = neighbours[i].port
+				requestingPacket.waitForPeer = neighbours[i].peerID
 				outstandingPackets.push(requestingPacket)
 			}
 		}
@@ -532,6 +508,53 @@ function checkAndRequest() {
 
 setInterval(checkAndRequest, checkAndRequestInterval)
 
+//Add communication overlay metadata
+function createMetadata() {
+	var metadata = {
+		'timestamp': new Date(),
+		'source': myID,
+		'destination': 'all',
+		'sequenceNumber': sequenceNumber++
+	}
+
+	return metadata
+}
+
+function sendToStream(data) {
+	var metadata = createMetadata()
+	var packet = {
+		'header': metadata,
+		'data': data
+	}
+	availablePackets.push(packet)
+
+	notifyAllNeighbours(_.clone(metadata))
+}
+
+
+
+
+function createHash(dataToHash) {
+	var hash = crypto.createHash('sha256')
+	hash.update(dataToHash)
+	return hash.digest('hex')
+}
+
+function createRandom() {
+	var current_date = (new Date()).valueOf().toString()
+	var random = Math.random().toString()
+	return createHash(current_date + random)
+}
+
+//For now for testing purpose, we only use each unique port number as
+//peer ID, but we can replace the port number with a random number generated
+//by createRandom() in the future
+function createMyID() {
+	return createHash(serverIOPort + '')
+}
+
+var myID = createMyID()
+
 
 
 
@@ -548,7 +571,7 @@ serverIO.on('connection', function (serverSocket) {
 		handlePeerInfoAsServer(msg, serverSocket, callback)
 	})
 	serverSocket.on('initialNotificationRes', function (msg) {
-		handleInitialNotificationRes(msg, serverSocket.port)
+		handleInitialNotificationRes(msg, serverSocket.peerID)
 	})
 	//The other side might be down or, 
 	//this peer (acting as a server) loses partial network
@@ -574,14 +597,24 @@ setInterval(checkNeighbourNum, 10000)
 
 
 function writeToLog() {
-	console.log('peer ' + serverIOPort)
+	console.log('****************** One Log Start *****************************')
+	console.log('Me: ' + myID)
+	console.log('My neighbours:')
 	for (var i in neighbours) {
-		console.log(neighbours[i].port)
+		console.log(neighbours[i].peerID)
 	}
+	console.log('Outstanding Packets:')
 	console.log(outstandingPackets)
+	console.log('Desired Packets:')
 	console.log(desiredPackets)
+	console.log('Available Packets:')
 	console.log(availablePackets)
-	console.log(availablePackets.length)
+	console.log('Length of Available Packets: ' + availablePackets.length)
+
+	var logTime = new Date()
+	var elapsedTime = logTime - startTime
+	console.log('Elapsed Time: ' + elapsedTime + ' ms')
+	console.log('******************** One Log End ***************************')
 }
 
 setInterval(writeToLog, 5000)
@@ -593,8 +626,10 @@ const numOfPackets = 10
 const sendInterval = 5000
 
 function sendData() {
-	sendToStream('kkkkkkk ' + serverIOPort)
+	sendToStream('A data packet from peer ' + myID)
 }
+
+var startTime = new Date()
 
 // setInterval(sendData, 5000)
 
