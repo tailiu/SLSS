@@ -1,29 +1,31 @@
 {
-    "name": "stencil",
-    "version": "0.0.1",
-    "description": "A distributed storage system",
-    "main": "index.js",
-    "scripts": {
-        "first_test": "./test/start.sh",
-        "second_test": "node ./test/crash.js",
-        "third_test": "./test/restore.sh",
-        "stop": "node ./test/stop.js"
-    },
-    "keywords": [
-        "distributed",
-        "storage",
-        "system"
-    ],
-    "author": "Tai Liu",
-    "license": "ISC",
-    "dependencies": {
-        "async": "^2.1.5",
-        "child_process": "^1.0.2",
-        "crypto": "0.0.3",
-        "fs": "0.0.1-security",
-        "kad": "^1.6.4",
-        "shuffle-array": "^1.0.1",
-        "socket.io": "^1.7.2",
-        "underscore": "^1.8.3"
-    }
+  "name": "stencil",
+  "version": "0.0.1",
+  "description": "A distributed storage system",
+  "main": "index.js",
+  "scripts": {
+    "first_test": "./test/start.sh",
+    "second_test": "node ./test/crash.js",
+    "third_test": "./test/restore.sh",
+    "stop": "node ./test/stop.js"
+  },
+  "keywords": [
+    "distributed",
+    "storage",
+    "system"
+  ],
+  "author": "Tai Liu",
+  "license": "ISC",
+  "dependencies": {
+    "async": "^2.1.5",
+    "child_process": "^1.0.2",
+    "crypto": "0.0.3",
+    "event-stream": "^3.3.4",
+    "fs": "0.0.1-security",
+    "kad": "^1.6.4",
+    "shuffle-array": "^1.0.1",
+    "socket.io": "^1.7.2",
+    "socket.io-stream": "^0.9.1",
+    "underscore": "^1.8.3"
+  }
 }
