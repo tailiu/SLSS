@@ -1,77 +1,47 @@
-var transport = require('./transport')
-var crypto = require('crypto')
+var Transport = require('./transport')
+var stream = require('./stream')
+var Logger = require('./logger')
 
-var Stencil = function(id, port, streamMeta) {
-	this.id = id
-	this.port = port
-	this.streamMeta = streamMeta
+const logInterval = 5000
 
-	this.transport = new transport(id, port, streamMeta)
+var Stencil = function(id, port) {
+	this._id = id
+	this._port = port
+	this._streamMeta = stream.createStreamMeta()
+
+	this._transport = new Transport(this._id, this._port, this._streamMeta)
+	this._logger = new Logger()
+
+	this._writeToLogPeriodically()
 }
 
 Stencil.prototype.sendToStream = function(data) {
-	this.transport.sendToStream(data)
+	this._transport.sendToStream(data)
 }
 
-//For test only
-const numOfPeers = 50
-const basePort = 10000
-const difference = 100
+Stencil.prototype._writeToLog = function() {
+	this._logger.oneLogStart()
 
-const serverIOPort = process.argv[2]
+	this._logger.logOneMessage('Me: ' + this._id)
 
-function createHash(dataToHash) {
-	var hash = crypto.createHash('sha256')
-	hash.update(dataToHash)
-	return hash.digest('hex')
-}
-
-function createRandom() {
-	var current_date = (new Date()).valueOf().toString()
-	var random = Math.random().toString()
-	return createHash(current_date + random)
-}
-
-//For now for testing purpose, we only use each unique port number as
-//peer ID, but we can replace the port number with a random number generated
-//by createRandom() in the future
-function createMyID() {
-	return serverIOPort + ''
-}
-
-var myID = createMyID()
-
-var streamMeta = {}
-
-function createStreamMeta() {
-	
-
-	streamMeta.memberList = []
-
-	for (var i = 0; i < numOfPeers; i++) {
-		var peerAddr = {
-			'host': 'localhost',
-			'port': basePort + difference * i,
-			'peerID': (basePort + difference * i) + ''
-		}
-		streamMeta.memberList.push(peerAddr)
+	this._logger.logOneMessage('My neighbours:')
+	for (var i in this._transport._neighbours) {
+		this._logger.logOneMessage(this._transport._neighbours[i].peerID)
 	}
 
+	this._logger.logMultipleMessages(['Outstanding Packets:', this._transport._outstandingPackets])
+	this._logger.logMultipleMessages(['Desired Packets:', this._transport._desiredPackets])
+	this._logger.logMultipleMessages(['Available Packets:', this._transport._availablePackets])
+
+	this._logger.logOneMessage('Length of Available Packets: ' + this._transport._availablePackets.length)
+
+	this._logger.logElapsedTime()
+
+	this._logger.oneLogEnd()
 }
 
-createStreamMeta()
-
-
-const numOfPackets = 10
-
-
-var stencil = new Stencil(myID, serverIOPort, streamMeta)
-
-function sendData() {
-	stencil.sendToStream('A data packet from peer ' + myID)
+Stencil.prototype._writeToLogPeriodically = function() {
+	setInterval(this._writeToLog.bind(this), logInterval)
 }
 
-for (var i = 0; i < numOfPackets; i++) {
-	sendData()
-}
-
+module.exports = Stencil

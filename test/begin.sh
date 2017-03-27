@@ -9,5 +9,5 @@ for (( i = 0;  i < $numOfPeers;  i++ ))
 do
 	port=`expr $basePort + $i \* $difference`
 	fileName=$baseLogPathName$i
-	node stencil.js $port > $fileName &
+	node test/begin.js $port > $fileName &
 done

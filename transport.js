@@ -31,7 +31,6 @@ var Transport = function(id, port, streamMeta) {
 	this._checkNeighbourNumPeriodically()
 	this._connectToNeighboursVoluntarily()
 	this._checkAndRequestPeriodically()
-	this._writeToLogPeriodically()
 }
 
 Transport.prototype.sendToStream = function(data) {
@@ -500,34 +499,5 @@ Transport.prototype._createServer = function() {
 Transport.prototype._checkNeighbourNumPeriodically = function() {
 	setInterval(this._checkNeighbourNum.bind(this), 10000)
 }
-
-
-
-
-Transport.prototype._writeToLog = function() {
-	console.log('****************** One Log Start *****************************')
-	console.log('Me: ' + this._myID)
-	console.log('My neighbours:')
-	for (var i in this._neighbours) {
-		console.log(this._neighbours[i].peerID)
-	}
-	console.log('Outstanding Packets:')
-	console.log(this._outstandingPackets)
-	console.log('Desired Packets:')
-	console.log(this._desiredPackets)
-	console.log('Available Packets:')
-	console.log(this._availablePackets)
-	console.log('Length of Available Packets: ' + this._availablePackets.length)
-
-	// var logTime = new Date()
-	// var elapsedTime = logTime - startTime
-	// console.log('Elapsed Time: ' + elapsedTime + ' ms')
-	// console.log('******************** One Log End ***************************')
-}
-
-Transport.prototype._writeToLogPeriodically = function() {
-	setInterval(this._writeToLog.bind(this), 5000)
-}
-
 
 module.exports = Transport
