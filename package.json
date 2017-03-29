@@ -21,11 +21,13 @@
     "child_process": "^1.0.2",
     "crypto": "0.0.3",
     "event-stream": "^3.3.4",
+    "events": "^1.1.1",
     "fs": "0.0.1-security",
     "kad": "^1.6.4",
     "shuffle-array": "^1.0.1",
     "socket.io": "^1.7.2",
     "socket.io-stream": "^0.9.1",
-    "underscore": "^1.8.3"
+    "underscore": "^1.8.3",
+    "util": "^0.10.3"
   }
 }

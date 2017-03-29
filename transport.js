@@ -1,10 +1,10 @@
 var io = require('socket.io')
 var clientIO = require('socket.io-client')
-var fs = require('fs')
-var kad = require('kad')
 var shuffle = require('shuffle-array')
 var _ = require('underscore')
 var utils = require('./utils')
+var events = require('events')
+var inherits = require('util').inherits
 
 const checkAndRequestInterval = 4000
 
@@ -12,19 +12,20 @@ const approximateLimitOfNeighbours = 5
 
 const limitOfInsufficientNeighboursTimes = 3
 
+//Note: for now streamMeta is fixed, and provided at the beginning
 var Transport = function(id, port, streamMeta) {
-	this._myID = id
-	this._myPort = port
+	events.call(this)
+
+	this._id = id
+	this._port = port
 	this._streamMeta = streamMeta
 
 	this._neighbours = []
 
-	this._availablePackets = []		//My window of availability
 	this._desiredPackets = []		//All desired packets, and in the neighbour's window of availability  
 	this._outstandingPackets = []	//Outstanding packets being requested from neighbours
 	this._myPackets = []			//Packets destinated to me 
 
-	this._sequenceNumber = 0
 	this._insufficientNeighboursTimes = 0
 
 	this._createServer()
@@ -33,17 +34,11 @@ var Transport = function(id, port, streamMeta) {
 	this._checkAndRequestPeriodically()
 }
 
-Transport.prototype.sendToStream = function(data) {
-	var metadata = this._createMetadata()
-	var packet = {
-		'header': metadata,
-		'data': data
-	}
-	this._availablePackets.push(packet)
+inherits(Transport, events)
 
-	this._notifyAllNeighbours(_.clone(metadata))
+Transport.prototype.sendToStream = function(packet) {
+	this._notifyAllNeighbours(_.clone(packet.header))
 }
-
 
 Transport.prototype._identifySocket = function(socketID) {
 	var index = undefined
@@ -117,7 +112,7 @@ Transport.prototype._manageSocket = function(socket, peerID, forcefully) {
 	    //However, we don't send available packets now, because we don't know 
 	    //whether this connection would be accepted by the other side
 	    var peerInfo = {
-	    	'peerID': self._myID,
+	    	'peerID': self._id,
 	    	'forcefully': forcefully
 	    }
 	    socket.emit('peerInfo', peerInfo, self._peerInfoResponse.bind(self))
@@ -155,7 +150,7 @@ Transport.prototype._connectToNeighboursVoluntarily = function(forcefully) {
 		var peerPort = member.port
 		var peerID = member.peerID
 
-		if (peerID == this._myID) {
+		if (peerID == this._id) {
 			continue
 		}
 
@@ -230,25 +225,34 @@ Transport.prototype._handleDisconnection = function(socket) {
 	this._removeSocketByID(socket.id)
 }
 
-//Notice that the initial notification message has 
-//a list of available packets header without intermediate 
-//field, because the response has a separate socketID field
-Transport.prototype._generateInitialNotificationMsg = function() {
-	var initialNotificationMsg = []
-
-	for (var i in this._availablePackets) {
-		initialNotificationMsg.push(this._availablePackets[i].header)
-	}
-
-	return initialNotificationMsg
-}
-
 Transport.prototype._handleInitialNotificationRes = function(peerAvailablePacketsMsg, peerID) {
 	for (var i in peerAvailablePacketsMsg) {
 		//Add intermediate to the packet just for the convenience of handling this packet
 		peerAvailablePacketsMsg[i].intermediate = peerID
 		this._handleNotify(peerAvailablePacketsMsg[i])
 	}
+}
+
+Transport.prototype._generateInitialNotificationPacket = function(res, callback) {
+	var self = this
+
+	//Notice that the initial notification message has 
+	//a list of available packets header without intermediate 
+	//field, because the response has a separate socketID field
+	self.emit('getAllMetadataFromStorageSystem', function(allMetadata) {
+		//Notify the new neighbour all the available packets this peer has.
+		//This method might cause unnecessary transmission of
+		//all available packets info, if the connection between the client 
+		//peer and the server peer is intermittent.
+		//However, in the case of short network partitions, 
+		//this transmission is also necessary
+		res.availablePacketsMsg = allMetadata
+		//myID is sent in the callback so that another side
+		//can handle notify
+		res.peerID = self._id
+
+		callback(res)
+	})
 }
 
 Transport.prototype._handlePeerInfoAsServer = function(msg, serverSocket, callback) {
@@ -274,18 +278,7 @@ Transport.prototype._handlePeerInfoAsServer = function(msg, serverSocket, callba
 		serverSocket.peerID = msg.peerID
 		this._neighbours.push(serverSocket)
 
-		//Notify the new neighbour all the available packets this peer has.
-		//This method might cause unnecessary transmission of
-		//all available packets info, if the connection between the client 
-		//peer and the server peer is intermittent.
-		//However, in the case of short network partitions, 
-		//this transmission is also necessary
-		res.availablePacketsMsg = this._generateInitialNotificationMsg()
-		//myID is sent in the callback so that another side
-		//can handle notify
-		res.peerID = this._myID
-
-		callback(res)
+		this._generateInitialNotificationPacket(res, callback)
 	}
 }
 
@@ -309,31 +302,21 @@ Transport.prototype._checkNeighbourNum = function() {
 	}
 }
 
-Transport.prototype._findIndexInAvailablePacketList = function(packetMsg) {
-	var availablePackets = this._availablePackets
-
-	for (var i = 0; i < availablePackets.length; i++) {
-		if (availablePackets[i].header.source == packetMsg.source && availablePackets[i].header.sequenceNumber == packetMsg.sequenceNumber) {
-			return i
-		}
-	}
-	return -1
-}
-
 Transport.prototype._sendInitialNotification = function(peerAvailablePacketsMsg, socketID) {
-	var availablePackets = this._availablePackets
-	var initialNotificationList = []
+	var self = this
 
-	for (var i in availablePackets) {
-		var index = utils.findIndexInPacketList(peerAvailablePacketsMsg, availablePackets[i].header)
-		if (index == -1) {
-			initialNotificationList.push(availablePackets[i].header)
-		}	
-	}
+	self.emit('getAllMetadataFromStorageSystem', function(allMetadata) {
+		var initialNotificationList = []
+		for (var i in allMetadata) {
+			var index = utils.findIndexInPacketList(peerAvailablePacketsMsg, allMetadata[i])
+			if (index == -1) {
+				initialNotificationList.push(allMetadata[i])
+			}	
+		}
 
-	var neighbourIndex = this._identifySocket(socketID)
-	this._neighbours[neighbourIndex].emit('initialNotificationRes', initialNotificationList)
-	
+		var neighbourIndex = self._identifySocket(socketID)
+		self._neighbours[neighbourIndex].emit('initialNotificationRes', initialNotificationList)
+	})	
 }
 
 Transport.prototype._handleInitialNotification = function(initialNotification) {
@@ -372,18 +355,18 @@ Transport.prototype._checkDesiredPackets = function(msg) {
 //For now, we handle notify by looking at 
 //availablePackets and desiredPackets
 Transport.prototype._handleNotify = function(msg) {
-	var index = this._findIndexInAvailablePacketList(msg)
-	
-	if (index != -1) {
-		return
-	}
+	var self = this
 
-	this._checkDesiredPackets(msg)
+	self.emit('findPositionInStorageSystem', msg, function(index) {
+		if (index == -1) {
+			self._checkDesiredPackets(msg)
+		}
+	})	
 }
 
 Transport.prototype._notifyAllNeighbours = function(msg) {
 	//This peer acts as an intermediate node for this packet
-	msg.intermediate = this._myID
+	msg.intermediate = this._id
 
 	for (var i in this._neighbours) {
 		this._neighbours[i].emit('notify', msg)
@@ -391,32 +374,36 @@ Transport.prototype._notifyAllNeighbours = function(msg) {
 }
 
 Transport.prototype._handleRequest = function(packetMsg, callback) {
-	var index = this._findIndexInAvailablePacketList(packetMsg)
+	var self = this
 
-	if (index == -1) {
-		callback('Error, no such packet')
-	} else {
-		callback(this._availablePackets[index])
-	}
+	self.emit('getDataFromStorageSystem', packetMsg, function(data){
+		if (data == undefined) {
+			callback('Error, no such packet')
+		} else {
+			callback(data)
+		}
+	})
 }
 
 Transport.prototype._responseFromRequestData = function(data) {
 	if (data == 'Error, no such packet') {
 		console.log(data)
 	} else {
-		var indexInOutstandingPackets = utils.findIndexInPacketList(this._outstandingPackets, data.header)
-		this._outstandingPackets.splice(indexInOutstandingPackets, 1)
+		var self = this
 
-		var indexInDesiredPackets = utils.findIndexInPacketList(this._desiredPackets, data.header)
-		this._desiredPackets.splice(indexInDesiredPackets, 1)
+		self.emit('putDataToStorageSystem', data, function(){
+			var indexInOutstandingPackets = utils.findIndexInPacketList(self._outstandingPackets, data.header)
+			self._outstandingPackets.splice(indexInOutstandingPackets, 1)
 
-		this._availablePackets.push(data)
+			var indexInDesiredPackets = utils.findIndexInPacketList(self._desiredPackets, data.header)
+			self._desiredPackets.splice(indexInDesiredPackets, 1)
 
-		this._notifyAllNeighbours(_.clone(data.header))
+			self._notifyAllNeighbours(_.clone(data.header))
+		})
 	}
 }
 
-Transport.prototype._Request = function(packet) {
+Transport.prototype._request = function(packet) {
 	// if (packet.intermediates.length == 1) {
 		var neighbours = this._neighbours
 		var requestingPacket = utils.deepCloneObject(packet)
@@ -447,7 +434,7 @@ Transport.prototype._checkAndRequest = function() {
 			continue
 		}
 
-		this._Request(utils.deepCloneObject(desiredPackets[i]))
+		this._request(utils.deepCloneObject(desiredPackets[i]))
 	}
 }
 
@@ -455,22 +442,10 @@ Transport.prototype._checkAndRequestPeriodically = function() {
 	setInterval(this._checkAndRequest.bind(this), checkAndRequestInterval)
 }
 
-//Add communication overlay metadata
-Transport.prototype._createMetadata = function() {
-	var metadata = {
-		'timestamp': new Date(),
-		'source': this._myID,
-		'destination': 'all',
-		'sequenceNumber': this._sequenceNumber++
-	}
-
-	return metadata
-}
-
 Transport.prototype._createServer = function() {
 	var self = this
 
-	var serverIO = io(this._myPort)
+	var serverIO = io(this._port)
 
 	serverIO.on('connection', function (serverSocket) {
 		serverSocket.on('notify', function (msg) {
