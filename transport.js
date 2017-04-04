@@ -189,21 +189,21 @@ Transport.prototype._deletePacketsInOutstandingPackets = function(peerID) {
 	utils.removeElementsFromArr(removePacketsFromIndex, outstandingPackets)
 }
 
-Transport.prototype._findIndexInIntermediatesOfDesiredPackets = function(intermediates, peerID) {
-	for (var i = 0; i < intermediates.length; i++) {
-		if (intermediates[i] == peerID) {
-			return i
-		}
-	}
-	return -1
-}
-
 Transport.prototype._checkAndDeletePacketsInDesiredPackets = function(peerID) {
 	var desiredPackets = this._desiredPackets
 	var removePacketsFromIndex = []
 
+	function findIndexInIntermediatesOfDesiredPackets(intermediates, peerID) {
+		for (var i = 0; i < intermediates.length; i++) {
+			if (intermediates[i] == peerID) {
+				return i
+			}
+		}
+		return -1
+	}
+
 	for (var i = 0; i < desiredPackets.length; i++) {
-		var index = this._findIndexInIntermediatesOfDesiredPackets(desiredPackets[i].intermediates, peerID)
+		var index = findIndexInIntermediatesOfDesiredPackets(desiredPackets[i].intermediates, peerID)
 		if (index == -1) {
 			continue
 		}
@@ -334,32 +334,29 @@ Transport.prototype._handleInitialNotification = function(initialNotification) {
 	this._sendInitialNotification(availablePacketsMsg, socketID)
 }
 
-Transport.prototype._checkDesiredPackets = function(msg) {
-	var desiredPackets = this._desiredPackets
-	var intermediate = msg.intermediate
-
-	for (var i in desiredPackets) {
-		if (desiredPackets[i].source == msg.source && desiredPackets[i].sequenceNumber == msg.sequenceNumber) {
-			desiredPackets[i].intermediates.push(intermediate)
-			return
-		}
-	}
-
-	desiredPackets.push(msg)
-	var length = desiredPackets.length
-	desiredPackets[length - 1].intermediates = []
-	desiredPackets[length - 1].intermediates.push(intermediate)
-	delete desiredPackets[length - 1].intermediate
-}
-
-//For now, we handle notify by looking at 
-//availablePackets and desiredPackets
 Transport.prototype._handleNotify = function(msg) {
 	var self = this
 
-	self.emit('findPositionInStorageSystem', msg, function(index) {
-		if (index == -1) {
-			self._checkDesiredPackets(msg)
+	function checkDesiredPackets(msg) {
+		var desiredPackets = self._desiredPackets
+		var intermediate = msg.intermediate
+
+		var indexInDesiredPackets = utils.findIndexInPacketList(desiredPackets, msg)
+		if (indexInDesiredPackets != -1) {
+			desiredPackets[indexInDesiredPackets].intermediates.push(intermediate)
+			return
+		}
+
+		desiredPackets.push(msg)
+		var length = desiredPackets.length
+		desiredPackets[length - 1].intermediates = []
+		desiredPackets[length - 1].intermediates.push(intermediate)
+		delete desiredPackets[length - 1].intermediate
+	}
+
+	self.emit('checkDataExistsInStorageSystem', msg, function(dataExists) {
+		if (!dataExists) {
+			checkDesiredPackets(msg)
 		}
 	})	
 }
@@ -380,25 +377,25 @@ Transport.prototype._handleRequest = function(packetMsg, callback) {
 		if (data == undefined) {
 			callback('Error, no such packet')
 		} else {
-			callback(data)
+			callback(packetMsg, data)
 		}
 	})
 }
 
-Transport.prototype._responseFromRequestData = function(data) {
+Transport.prototype._responseFromRequestData = function(header, data) {
 	if (data == 'Error, no such packet') {
 		console.log(data)
 	} else {
 		var self = this
 
-		self.emit('putDataToStorageSystem', data, function(){
-			var indexInOutstandingPackets = utils.findIndexInPacketList(self._outstandingPackets, data.header)
+		self.emit('storeRequestedData', header, data, function(){
+			var indexInOutstandingPackets = utils.findIndexInPacketList(self._outstandingPackets, header)
 			self._outstandingPackets.splice(indexInOutstandingPackets, 1)
 
-			var indexInDesiredPackets = utils.findIndexInPacketList(self._desiredPackets, data.header)
+			var indexInDesiredPackets = utils.findIndexInPacketList(self._desiredPackets, header)
 			self._desiredPackets.splice(indexInDesiredPackets, 1)
 
-			self._notifyAllNeighbours(_.clone(data.header))
+			self._notifyAllNeighbours(_.clone(header))
 		})
 	}
 }
