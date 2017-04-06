@@ -7,7 +7,8 @@
     "begin": "./test/begin.sh",
     "20_down": "node ./test/crash.js",
     "restore": "./test/restore.sh",
-    "stop": "node ./test/stop.js"
+    "stop": "node ./test/stop.js",
+    "clean": "./test/clean.sh"
   },
   "keywords": [
     "distributed",
@@ -25,6 +26,7 @@
     "events": "^1.1.1",
     "fs": "0.0.1-security",
     "kad": "^1.6.4",
+    "mkdirp": "^0.5.1",
     "shuffle-array": "^1.0.1",
     "socket.io": "^1.7.2",
     "socket.io-stream": "^0.9.1",

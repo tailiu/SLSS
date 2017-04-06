@@ -1,25 +1,39 @@
 var fs = require('fs')
 var bases = require('bases')
 var utils = require('./utils')
+var mkdirp = require('mkdirp')
 
-const logFolder = 'log_system'
 const logFileSizeLimit = 10485760		// log file size limit is 10MB
+const typeFieldLen = 1 					// 1 character
 const keyLenFieldLen = 2				// 2 characters
 const metadataLenFieldLen = 3			// 3 characters
 const valueLenFieldLen = 4 				// 4 characters
-const typeFieldLen = 1 					// 1 character
 const dataType = 0 						// '0' represents a value contains actual data
 const referenceType = 1 				// '1' represents a value contains a reference to actual data(used in storing large data)
 const checksumAlgorithm = 'sha1'
 const SHA1Len = 40
 
-const checkPointFile = 'checkpoints'
-const checkPointPositionDigitLen = 5
-const checkPointLenDigitLen = 4
+const checkpointPositionFieldLen = 5
+const checkpointLenFieldLen = 4
+
+const checkpointingInterval = 7000
+
+var checkpointMaxLength
+var checkpointMaxPosition
+
+
+// Actually, these two paths are fixed and checkpointFolder is unnecessary,
+// but here these two paths are set based on id for testing purpose. 
+var checkpointFilePath
+var logFolder
+var checkpointFolder = 'checkpoints/'
 
 //1. Checkpoints
 //2. Multiple log files
-var Storage = function() {
+var Storage = function(id) {
+	checkpointFilePath = checkpointFolder + id
+	logFolder = 'log_system/' + id + '/'
+
 	this._indices = {}
 	
 	this._nextAppendStartPosition = {}
@@ -30,9 +44,20 @@ var Storage = function() {
 	// Therefore, the log might have 'holes'. 
 	this._recoveryStartPosition = {}
 
-	this._logs = []
-
 	this._init()
+
+	this._makeCheckpointsPeriodically()
+
+	checkpointMaxLength = bases.fromBase16(this._generateFs(checkpointLenFieldLen))
+	checkpointMaxPosition = bases.fromBase16(this._generateFs(checkpointPositionFieldLen))
+}
+
+Storage.prototype._generateFs = function(FLength) {
+	var Fs = ''
+	for (var i = 0; i < FLength; i++) {
+		Fs += 'f'
+	}
+	return Fs
 }
 
 // Sequence numbers would be replaced by index to the version array in the future
@@ -48,37 +73,42 @@ Storage.prototype.get = function(key, index, callback) {
 	} else {
 		var oneVersion = versions[index]
 
-		this._readAsync(oneVersion.fd, oneVersion.position, oneVersion.length, false, function(err, bytesRead, data) {
+		var filePath = logFolder + oneVersion.file
+		fs.open(filePath, 'r', function(err, fd) {
 			if (err != null) callback(err, null, null)
 
-			if (!self._verifyChecksum(data)) {
-				callback('Data fails checksum verification', null, null)
-			} else {
-				// Key length
-				var keyLen = key.length
+			self._readAsync(fd, oneVersion.position, oneVersion.length, false, function(err, bytesRead, data) {
+				if (err != null) callback(err, null, null)
 
-				// Get metadata length 
-				var metadataLenFieldStartPosition = SHA1Len + typeFieldLen + keyLenFieldLen
-				var metadataLenFieldEndPosition = metadataLenFieldStartPosition + metadataLenFieldLen
-				var metadataLen = bases.fromBase16(data.substring(metadataLenFieldStartPosition, metadataLenFieldEndPosition))
+				if (!self._verifyChecksum(data)) {
+					callback('Data fails checksum verification', null, null)
+				} else {
+					// Key length
+					var keyLen = key.length
 
-				// Get metadata
-				var metadataStartPosition = SHA1Len + typeFieldLen + keyLenFieldLen + metadataLenFieldLen + valueLenFieldLen + keyLen
-				var metadataEndPosition = metadataStartPosition + metadataLen
-				var metadata = data.substring(metadataStartPosition, metadataEndPosition)
+					// Get metadata length 
+					var metadataLenFieldStartPosition = SHA1Len + typeFieldLen + keyLenFieldLen
+					var metadataLenFieldEndPosition = metadataLenFieldStartPosition + metadataLenFieldLen
+					var metadataLen = bases.fromBase16(data.substring(metadataLenFieldStartPosition, metadataLenFieldEndPosition))
 
-				// Get value length
-				var valueLenFieldStartPosition = metadataLenFieldEndPosition
-				var valueLenFieldEndPosition = valueLenFieldStartPosition + valueLenFieldLen
-				var valueLen = bases.fromBase16(data.substring(valueLenFieldStartPosition, valueLenFieldEndPosition))
+					// Get metadata
+					var metadataStartPosition = SHA1Len + typeFieldLen + keyLenFieldLen + metadataLenFieldLen + valueLenFieldLen + keyLen
+					var metadataEndPosition = metadataStartPosition + metadataLen
+					var metadata = data.substring(metadataStartPosition, metadataEndPosition)
 
-				// Get Value
-				var valueStartPosition = metadataEndPosition
-				var valueEndPosition = valueStartPosition + valueLen
-				var value = data.substring(valueStartPosition, valueEndPosition)
+					// Get value length
+					var valueLenFieldStartPosition = metadataLenFieldEndPosition
+					var valueLenFieldEndPosition = valueLenFieldStartPosition + valueLenFieldLen
+					var valueLen = bases.fromBase16(data.substring(valueLenFieldStartPosition, valueLenFieldEndPosition))
 
-				callback(null, metadata, value)	
-			}
+					// Get Value
+					var valueStartPosition = metadataEndPosition
+					var valueEndPosition = valueStartPosition + valueLen
+					var value = data.substring(valueStartPosition, valueEndPosition)
+
+					callback(null, metadata, value)	
+				}
+			})
 		})
 	}
 }
@@ -104,36 +134,24 @@ Storage.prototype._readAsync = function(fd, position, length, safe, callback) {
 	})
 }
 
-Storage.prototype._readSync = function(fd, position, length, safe) {
-	var buffer 
-	if (safe) {
-		buffer = Buffer.alloc(length)
-	} else {
-		buffer = Buffer.allocUnsafe(length)
+Storage.prototype._convertToLogFormat = function(value, maxLength) {
+	var base16Value = bases.toBase16(value)
+
+	if (base16Value.length > maxLength) {
+		console.log('Data is too long')
+		return 
 	}
 
-	fs.readSync(fd, buffer, 0, length, position)
-	return buffer.toString()
+	var lengthDiff = maxLength - base16Value.length
+	for (var i = 0; i < lengthDiff; i++) {
+		base16Value = '0' +  base16Value
+	}
+
+	return base16Value
 }
 
 Storage.prototype.put = function(key, value, metadata, callback) {
 	var self = this
-
-	function convertToLogFormat(value, maxLength) {
-		var base16Value = bases.toBase16(value)
-
-		if (base16Value.length > maxLength) {
-			console.log('Data is too long')
-			return 
-		}
-
-		var lengthDiff = maxLength - base16Value.length
-		for (var i = 0; i < lengthDiff; i++) {
-			base16Value = '0' +  base16Value
-		}
-
-		return base16Value
-	}
 
 	function appendToLog(key, value, metadata, callback) {
 		var logRecord = ''
@@ -141,65 +159,43 @@ Storage.prototype.put = function(key, value, metadata, callback) {
 		//Stringify metadata to append to logs
 		var stringifiedMetadata = JSON.stringify(metadata)
 
-		var keyLen = convertToLogFormat(key.length, keyLenFieldLen)
-		var metadataLen = convertToLogFormat(stringifiedMetadata.length, metadataLenFieldLen)
-		var valueLen = convertToLogFormat(value.length, valueLenFieldLen)
+		var keyLen = self._convertToLogFormat(key.length, keyLenFieldLen)
+		var metadataLen = self._convertToLogFormat(stringifiedMetadata.length, metadataLenFieldLen)
+		var valueLen = self._convertToLogFormat(value.length, valueLenFieldLen)
 		
 		var withoutChecksum = dataType + keyLen + metadataLen + valueLen + key + stringifiedMetadata + value
 		var checksum = utils.createHash(withoutChecksum, checksumAlgorithm)
 
 		logRecord = checksum + withoutChecksum
 
-		if (self._nextAppendStartPosition.fd == undefined) {
-			var fileName = utils.createRandom('sha1')
-			var logFileDescriptor = fs.openSync(logFolder + '/' + fileName, 'a+')
-			self._nextAppendStartPosition.fd = logFileDescriptor
-			self._nextAppendStartPosition.position = 0
-		}
-
-		var fd = self._nextAppendStartPosition.fd
+		var file = self._nextAppendStartPosition.file
 		var logRecordPostion = self._nextAppendStartPosition.position
 		var logRecordLength = logRecord.length
+		var filePath = logFolder + file
 
 		//Update next append start position
 		self._nextAppendStartPosition.position += logRecordLength
 
-		fs.appendFile(fd, logRecord, function(err) {
+		fs.appendFile(filePath, logRecord, function(err) {
   			if (err != null) throw err
-  			callback(err, fd, logRecordPostion, logRecordLength)
+  			callback(err, file, logRecordPostion, logRecordLength)
 		})
 	}
 
-	function updateIndices(key, metadata, fd, logRecordPostion, logRecordLength) {
-		if (self._indices[key] == undefined) {
-			self._indices[key] = {}
-			self._indices[key]['versions'] = []
-		} 
-
-		var index = {}
-		index.fd = fd
-		index.position = logRecordPostion
-		index.length = logRecordLength
-		index.metadata = metadata
-
-		self._indices[key]['versions'].push(index)
-
-	}
-
-	function updateLatestCompletionPosition(fd, logRecordPostion, logRecordLength) {
+	function updateRecoveryStartPosition(file, logRecordPostion, logRecordLength) {
 		var position = logRecordPostion + logRecordLength
 		// Note: a late but successsful old file append might also change the recovery start point
 		// Solve this when considering multiple log files!!!!!!!!!!!!!!!!
-		if (fd != self._recoveryStartPosition.fd || self._recoveryStartPosition.position < position) {
-			self._recoveryStartPosition.fd = fd
+		if (file != self._recoveryStartPosition.file || self._recoveryStartPosition.position < position) {
+			self._recoveryStartPosition.file = file
 			self._recoveryStartPosition.position = position
 		}
 	}
 
-	appendToLog(key, value, metadata, function(err, fd, logRecordPostion, logRecordLength){
+	appendToLog(key, value, metadata, function(err, file, logRecordPostion, logRecordLength){
 		if (err != null) throw err
-		updateIndices(key, metadata, fd, logRecordPostion, logRecordLength)
-		updateLatestCompletionPosition(fd, logRecordPostion, logRecordLength)
+		self._updateIndices(key, metadata, file, logRecordPostion, logRecordLength)
+		updateRecoveryStartPosition(file, logRecordPostion, logRecordLength)
 		callback()
 	})
 
@@ -224,15 +220,221 @@ Storage.prototype.getMetadata = function(key, index) {
 	return this._indices[key].versions[index].metadata
 }
 
+Storage.prototype._updateIndices = function(key, metadata, file, logRecordPostion, logRecordLength) {
+	if (this._indices[key] == undefined) {
+		this._indices[key] = {}
+		this._indices[key]['versions'] = []
+	} 
+
+	var index = {}
+	index.file = file
+	index.position = logRecordPostion
+	index.length = logRecordLength
+	index.metadata = metadata
+
+	this._indices[key]['versions'].push(index)
+
+}
+
+Storage.prototype._writeSync = function(fd, position, data) {
+	var dataLength = data.length
+	var buffer = Buffer.from(data)
+	fs.writeSync(fd, buffer, 0, dataLength, position)
+}
+
+Storage.prototype._readSync = function(fd, position, length, safe) {
+	var buffer 
+	if (safe) {
+		buffer = Buffer.alloc(length)
+	} else {
+		buffer = Buffer.allocUnsafe(length)
+	}
+
+	fs.readSync(fd, buffer, 0, length, position)
+	return buffer.toString()
+}
+
+Storage.prototype._updateCheckpointFileHeaderSync = function(fd, position, length) {
+	var checkpointPosition = this._convertToLogFormat(position, checkpointPositionFieldLen)
+	var checkpointLength = this._convertToLogFormat(length, checkpointLenFieldLen)
+	var header = checkpointPosition + checkpointLength
+	this._writeSync(fd, 0, checkpointPosition + checkpointLength)
+}
 
 Storage.prototype._init = function() {
-	// var checkPointFileDescriptor = fs.openSync(checkPointFile, 'a+')
-	// var checkPointPostion = bases.fromBase16(this._readSync(checkPointFileDescriptor, 0, checkPointPositionDigitLen, true))
-	// var checkPointLength = bases.fromBase16(this._readSync(checkPointFileDescriptor, 0, checkPointLenDigitLen, true))
+	var self = this
+
+	function comparator(v1, v2) {
+		if (v1 < v2) return -1
+		if (v1 > v2) return 1
+		return 0	
+	}
+
+	function convertToInt(arr) {
+		for (var i in arr) {
+			arr[i] = parseInt(arr[i])
+		}
+		return arr
+	}
+
+	//Note: not consider reference data type for now
+	function restoreMemoryIndicesFromOneLog(file, restoreStartPosition) {
+		var logRecordStartPostion = restoreStartPosition
+		var filePath = logFolder + file
+		var fd = fs.openSync(filePath, 'r')
+		var headerLength = SHA1Len + typeFieldLen + keyLenFieldLen + metadataLenFieldLen + valueLenFieldLen
+
+		while (true) {
+			var header = self._readSync(fd, logRecordStartPostion, headerLength, false)
+			var checksum = header.substr(0, SHA1Len)
+			var keyLen = bases.fromBase16(header.substr(SHA1Len + typeFieldLen, keyLenFieldLen))
+			var metadataLen = bases.fromBase16(header.substr(SHA1Len + typeFieldLen + keyLenFieldLen, metadataLenFieldLen))
+			var valueLen = bases.fromBase16(header.substr(SHA1Len + typeFieldLen + keyLenFieldLen + metadataLenFieldLen, valueLenFieldLen))
+			var dataLen = keyLen + metadataLen + valueLen
+			try {
+				var data = self._readSync(fd, logRecordStartPostion + headerLength, dataLen, false)
+			} catch (err) {
+				if (err == 'Offset is out of bounds') {
+					return logRecordStartPostion
+				}
+			}
+			var logRecord = header + data
+			if (self._verifyChecksum(logRecord)) {
+				var key = data.substr(0, keyLen)
+				var metadata = JSON.parse(data.substr(keyLen, metadataLen))
+				var logRecordLength = headerLength + dataLen
+				console.log(logRecordStartPostion)
+				self._updateIndices(key, metadata, file, logRecordStartPostion, logRecordLength)
+
+				logRecordStartPostion += logRecordLength
+			} else {
+				return logRecordStartPostion
+			}
+		}
+	}
+
+	function restoreMemoryIndices() {
+		var logs = convertToInt(fs.readdirSync(logFolder))
+
+		//Note file names here are all integers 
+		if (logs.length != 0) {
+			var recoveryStartFile = -1
+			var recoveryStartPosition = 0
+			var startPosition
+			var nextAppendStartPosition = {}
+
+			if (self._recoveryStartPosition.fileName != undefined) {
+				recoveryStartFile = self._recoveryStartPosition.fileName
+				recoveryStartPosition = self._recoveryStartPosition.position
+			}
+
+			logs.sort(comparator)
+
+			for (var i in logs) {
+				if (recoveryStartFile > logs[i]) {
+					continue
+				}
+
+				if (recoveryStartFile == logs[i]) {
+					startPosition = recoveryStartPosition
+				}
+
+				if (recoveryStartFile < logs[i]) {
+					startPosition = 0
+				}
+
+				nextAppendStartPosition.file = logs[i]
+				nextAppendStartPosition.position = restoreMemoryIndicesFromOneLog(logs[i], startPosition)
+			}
+
+			self._nextAppendStartPosition = nextAppendStartPosition
+
+		} else {
+			var firstLogName = '0'
+			self._nextAppendStartPosition.file = firstLogName
+			self._nextAppendStartPosition.position = 0
+		}
+	}
+
+	function loadCheckpointInfo() {
+		var exists = fs.existsSync(checkpointFilePath)
+		
+		if (exists) {
+			var checkpointFileDescriptor = fs.openSync(checkpointFilePath, 'r')
+			var checkpointPostionAndLengthRawData = self._readSync(checkpointFileDescriptor, 0, checkpointPositionFieldLen + checkpointLenFieldLen, false)
+			var checkpointPosition = bases.fromBase16(checkpointPostionAndLengthRawData.substr(0, checkpointPositionFieldLen))
+			var checkpointLength = bases.fromBase16(checkpointPostionAndLengthRawData.substr(checkpointPositionFieldLen, checkpointLenFieldLen))
+
+			if (checkpointLength != 0) {
+				var checkpointRawData = self._readSync(checkpointFileDescriptor, checkpointPosition, checkpointLength, false)
+				if (!self._verifyChecksum(checkpointRawData)) {
+					return
+				}
+				var checkpoint = JSON.parse(checkpointRawData.substr(SHA1Len))
+				self._indices = checkpoint.indices
+				self._recoveryStartPosition = checkpoint.recoveryStartPosition
+				console.log('*******************')
+				console.log(JSON.stringify(self._indices, null, 4))
+				console.log('*******************')
+				console.log('*******************')
+				console.log(JSON.stringify(self._recoveryStartPosition, null, 4))
+				console.log('*******************')
+			}
+		} else {
+			var checkpointFileDescriptor = fs.openSync(checkpointFilePath, 'a+')
+			self._updateCheckpointFileHeaderSync(checkpointFileDescriptor, checkpointPositionFieldLen + checkpointLenFieldLen, 0)
+		}
+	}
+
+	// Create folders if they don't exist
+	mkdirp.sync(logFolder)
+	mkdirp.sync(checkpointFolder)
+
+	// If there is a checkpoint file, the load checkpoint info from the checkpoint file
+	// Otherwise, create one file and initialize this file
+	loadCheckpointInfo()
+
+	// Rebuild memory indices by checkpoint info and reading log records
+	restoreMemoryIndices()
 	
-	// if (checkPointLength == 0) {
-	// }
-	// this._logs = fs.readdirSync(logFolder)
+	console.log(JSON.stringify(this._indices, null, 4))
+}
+
+// Append to file and when file is too large, wrap over.
+// First append synchronously -> update metadata at the front of the file
+// If append is unsuccessful, we can still use the previous checkpoint 
+Storage.prototype._makeCheckpoint = function() {
+	var checkpointObj = {}
+	checkpointObj.indices = this._indices
+	checkpointObj.recoveryStartPosition = this._recoveryStartPosition
+
+	var stringifiedCheckpoint = JSON.stringify(checkpointObj)
+	var checksum = utils.createHash(stringifiedCheckpoint, checksumAlgorithm)
+	var checkpointLength = SHA1Len + stringifiedCheckpoint.length
+	var checkpoint = checksum + stringifiedCheckpoint
+
+	if (checkpointLength > checkpointMaxLength) {
+		console.log('Checkpoint is too long!!')
+		return
+	}
+
+	var checkpointFileDescriptor = fs.openSync(checkpointFilePath, 'r+')
+	var lastCheckpointMeta = this._readSync(checkpointFileDescriptor, 0, checkpointPositionFieldLen + checkpointLenFieldLen, false)
+	var lastCheckpointPosition = bases.fromBase16(lastCheckpointMeta.substr(0, checkpointPositionFieldLen))
+	var lastCheckpointLength = bases.fromBase16(lastCheckpointMeta.substr(checkpointPositionFieldLen, checkpointLenFieldLen))
+
+	var checkpointStartPosition = lastCheckpointPosition + lastCheckpointLength
+	// Check whether we need to wrap the write
+	if (checkpointStartPosition > checkpointMaxPosition) {
+		checkpointStartPosition = checkpointPositionFieldLen + checkpointLenFieldLen
+	}
+	this._writeSync(checkpointFileDescriptor, checkpointStartPosition, checkpoint)
+
+	this._updateCheckpointFileHeaderSync(checkpointFileDescriptor, checkpointStartPosition, checkpointLength)
+}
+
+Storage.prototype._makeCheckpointsPeriodically = function() {
+	setInterval(this._makeCheckpoint.bind(this), checkpointingInterval)
 }
 
 module.exports = Storage

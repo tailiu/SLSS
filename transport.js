@@ -6,6 +6,8 @@ var utils = require('./utils')
 var events = require('events')
 var inherits = require('util').inherits
 
+const checkNeighbourNumInterval = 10000
+
 const checkAndRequestInterval = 4000
 
 const approximateLimitOfNeighbours = 5
@@ -469,7 +471,7 @@ Transport.prototype._createServer = function() {
 }
 
 Transport.prototype._checkNeighbourNumPeriodically = function() {
-	setInterval(this._checkNeighbourNum.bind(this), 10000)
+	setInterval(this._checkNeighbourNum.bind(this), checkNeighbourNumInterval)
 }
 
 module.exports = Transport

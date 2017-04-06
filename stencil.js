@@ -10,13 +10,13 @@ var Stencil = function(id, port) {
 	this._port = port
 	this._streamMeta = stream.createStreamMeta()
 	
-	this._storage = new Storage()
-	this._transport = new Transport(this._id, this._port, this._streamMeta)
-	this._logger = new Logger()
+	this._storage = new Storage(this._id)
+	// this._transport = new Transport(this._id, this._port, this._streamMeta)
+	// this._logger = new Logger()
 
-	this._bindTransportEventHandlers()
+	// this._bindTransportEventHandlers()
 	
-	this._writeToLogPeriodically()
+	// this._writeToLogPeriodically()
 }
 
 
@@ -44,7 +44,7 @@ Stencil.prototype.sendToStream = function(key, value) {
 		'data': value
 	}
 	this._storage.put(key, value, metadata, function(){
-		self._transport.sendToStream(packet)
+		// self._transport.sendToStream(packet)
 	})
 }
 

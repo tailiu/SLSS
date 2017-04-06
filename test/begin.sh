@@ -5,7 +5,7 @@ basePort=10000
 difference=100
 baseLogPathName="./logs/log"
 
-rm -r ./log_system/*
+# rm -r ./log_system/*
 
 for (( i = 0;  i < $numOfPeers;  i++ ))
 do
