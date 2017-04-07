@@ -29,7 +29,7 @@ var myID = createMyID()
 var stencil = new Stencil(myID, serverIOPort)
 
 function sendData(number) {
-	stencil.sendToStream(myID + ':test1:' + ':' + number,  'A data packet from peer ' + myID + ' with key ' + myID + ':test1:' + ':' + number)
+	stencil.sendToStream(myID + ':test2:' + ':' + number,  'A data packet from peer ' + myID + ' with key ' + myID + ':test2:' + ':' + number)
 }
 
 

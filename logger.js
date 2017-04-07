@@ -2,6 +2,14 @@ var Logger = function () {
 	this.startTime = new Date()
 }
 
+Logger.prototype.recoveryStart = function() {
+	console.log('****************** Recovery Process Start *****************************')
+}
+
+Logger.prototype.recoveryEnd = function() {
+	console.log('****************** Recovery Process End *****************************')
+}
+
 Logger.prototype.oneLogStart = function() {
 	console.log('****************** One Log Start *****************************')
 }

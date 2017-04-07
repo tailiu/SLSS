@@ -1,4 +1,4 @@
-var Stencil = require('./stencil')
+var Stencil = require('../stencil')
 
 const serverIOPort = process.argv[2]
 
@@ -27,15 +27,3 @@ var myID = createMyID()
 
 
 var stencil = new Stencil(myID, serverIOPort)
-
-function sendData(number) {
-	stencil.sendToStream('|' + myID + ':' + number + '|',  'A data packet from peer ' + myID + ' with key ' + '|' + myID + ':' + number + '|')
-}
-
-
-
-const numOfPackets = 2
-
-for (var i = 0; i < numOfPackets; i++) {
-	sendData(i)
-}

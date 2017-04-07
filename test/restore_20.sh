@@ -10,5 +10,5 @@ do
 	port=`expr $basePort + $i \* $difference`
 	fileName=$baseLogPathName$i
 	echo "******** Restart ********" >> $fileName
-	node peer.js $port >> $fileName &
+	node test/restore_20.js $port >> $fileName &
 done

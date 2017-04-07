@@ -11,12 +11,12 @@ var Stencil = function(id, port) {
 	this._streamMeta = stream.createStreamMeta()
 	
 	this._storage = new Storage(this._id)
-	// this._transport = new Transport(this._id, this._port, this._streamMeta)
-	// this._logger = new Logger()
+	this._transport = new Transport(this._id, this._port, this._streamMeta)
+	this._logger = new Logger()
 
-	// this._bindTransportEventHandlers()
+	this._bindTransportEventHandlers()
 	
-	// this._writeToLogPeriodically()
+	this._writeToLogPeriodically()
 }
 
 
@@ -44,7 +44,7 @@ Stencil.prototype.sendToStream = function(key, value) {
 		'data': value
 	}
 	this._storage.put(key, value, metadata, function(){
-		// self._transport.sendToStream(packet)
+		self._transport.sendToStream(packet)
 	})
 }
 
@@ -86,7 +86,7 @@ Stencil.prototype._getAllMetadata = function(callback) {
 	//Format all metadata to the communication overlay packet header
 	function formatAllMetadataToPacketHeader(allMetadata) {
 		var formatedMetadata = []
-		
+
 		for (var key in allMetadata) {
 			for (var i in allMetadata[key].versions) {
 				var oneMetadata = {}
@@ -121,7 +121,7 @@ Stencil.prototype._writeToLog = function() {
 	this._logger.logMultipleMessages(['Desired Packets:', this._transport._desiredPackets])
 	this._logger.logMultipleMessages(['Memory Indices:', JSON.stringify(this._storage._indices, null, 4)])
 
-	this._logger.logOneMessage('The Size of My Storage: ' + Object.keys(this._storage._indices).length)
+	this._logger.logOneMessage('The Size of My Storage(Memory Indices): ' + Object.keys(this._storage._indices).length)
 
 	this._logger.logElapsedTime()
 

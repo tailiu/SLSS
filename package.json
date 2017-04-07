@@ -5,9 +5,10 @@
   "main": "index.js",
   "scripts": {
     "begin": "./test/begin.sh",
-    "20_down": "node ./test/crash.js",
-    "restore": "./test/restore.sh",
-    "stop": "node ./test/stop.js",
+    "down_20": "node ./test/down_20.js",
+    "restore_20": "./test/restore_20.sh",
+    "stop_all": "node ./test/stop_all.js",
+    "restart_all": "./test/restart_all.sh",
     "clean": "./test/clean.sh"
   },
   "keywords": [
