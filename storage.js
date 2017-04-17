@@ -4,7 +4,9 @@ var utils = require('./utils')
 var mkdirp = require('mkdirp')
 var Logger = require('./logger')
 
-const logFileSizeLimit = 10485760		// log file size limit is 10MB
+// A log file size limit is equal to this number of 'F'
+const logFileSizeLimit = 4		
+
 const typeFieldLen = 1 					// 1 character
 const keyLenFieldLen = 2				// 2 characters
 const metadataLenFieldLen = 3			// 3 characters
@@ -14,9 +16,13 @@ const referenceType = 1 				// '1' represents a value contains a reference to ac
 const checksumAlgorithm = 'sha1'
 const SHA1Len = 40
 
-const checkpointPositionFieldLen = 9
-const checkpointLenFieldLen = 8
+// Normally, the checkpoint position field length should be one bit longer than the checkpoint length field length 
+const checkpointPositionFieldLen = 6
+const checkpointLenFieldLen = 5
 
+// Note: for now we simply make checkpoints periodically
+// An optimization is to make checkpoints when necessary(program terminates), and 
+// not to make checkpoints when the log system is not updated
 const checkpointingInterval = 7000
 
 var checkpointMaxLength
@@ -24,19 +30,20 @@ var checkpointMaxPosition
 
 
 // Actually, these two paths are fixed and checkpointFolder is unnecessary,
-// but here these two paths are set based on id for testing purpose. 
+// but here these two paths are set here based on id for testing purpose. 
 var checkpointFilePath
 var logFolder
 var checkpointFolder = 'checkpoints/'
 
-//1. Checkpoints
-//2. Multiple log files
+
 var Storage = function(id) {
 	checkpointFilePath = checkpointFolder + id
 	logFolder = 'log_system/' + id + '/'
 
 	checkpointMaxLength = bases.fromBase16(this._generateFs(checkpointLenFieldLen))
 	checkpointMaxPosition = bases.fromBase16(this._generateFs(checkpointPositionFieldLen))
+
+	logFileMaxLength = bases.fromBase16(this._generateFs(logFileSizeLimit))
 
 	this._logger = new Logger()
 
@@ -169,18 +176,39 @@ Storage.prototype.put = function(key, value, metadata, callback) {
 		var checksum = utils.createHash(withoutChecksum, checksumAlgorithm)
 
 		logRecord = checksum + withoutChecksum
-
-		var file = self._nextAppendStartPosition.file
-		var logRecordPostion = self._nextAppendStartPosition.position
 		var logRecordLength = logRecord.length
-		var filePath = logFolder + file
 
-		//Update next append start position
-		self._nextAppendStartPosition.position += logRecordLength
+		var logFile
+		var logRecordPostion
+		var filePath
+
+		var nextAppendStartPosition = self._nextAppendStartPosition.position + logRecordLength
+
+		// Note we don't consider storing a very large record which could be even larger than the log file max length
+		// If we want to store such a large record, we have to use reference data type
+		if (nextAppendStartPosition > logFileMaxLength) {
+			logFile = (parseInt(self._nextAppendStartPosition.file) + 1) + ''
+			filePath = logFolder + logFile
+
+			logRecordPostion = 0
+
+			//Update next append start position and file
+			self._nextAppendStartPosition.position = logRecordLength
+			self._nextAppendStartPosition.file = logFile
+
+		} else {
+			logFile = self._nextAppendStartPosition.file
+			filePath = logFolder + logFile
+
+			logRecordPostion = self._nextAppendStartPosition.position
+
+			//Only update next append start position
+			self._nextAppendStartPosition.position += logRecordLength
+		}
 
 		fs.appendFile(filePath, logRecord, function(err) {
   			if (err != null) throw err
-  			callback(err, file, logRecordPostion, logRecordLength)
+  			callback(err, logFile, logRecordPostion, logRecordLength)
 		})
 	}
 
@@ -226,7 +254,7 @@ Storage.prototype._updateIndices = function(key, metadata, file, logRecordPostio
 	if (this._indices[key] == undefined) {
 		this._indices[key] = {}
 		this._indices[key]['versions'] = []
-	} 
+	}
 
 	var index = {}
 	index.file = file
@@ -314,6 +342,36 @@ Storage.prototype._init = function() {
 		}
 	}
 
+	function loadCheckpointInfo() {
+		var exists = fs.existsSync(checkpointFilePath)
+		
+		if (exists) {
+			var checkpointFileDescriptor = fs.openSync(checkpointFilePath, 'r')
+			var checkpointPostionAndLengthRawData = self._readSync(checkpointFileDescriptor, 0, checkpointPositionFieldLen + checkpointLenFieldLen, false)
+			var checkpointPosition = bases.fromBase16(checkpointPostionAndLengthRawData.substr(0, checkpointPositionFieldLen))
+			var checkpointLength = bases.fromBase16(checkpointPostionAndLengthRawData.substr(checkpointPositionFieldLen, checkpointLenFieldLen))
+
+			if (checkpointLength != 0) {
+				var checkpointRawData = self._readSync(checkpointFileDescriptor, checkpointPosition, checkpointLength, false)
+				if (!self._verifyChecksum(checkpointRawData)) {
+					return
+				}
+				var checkpoint = JSON.parse(checkpointRawData.substr(SHA1Len))
+				self._indices = checkpoint.indices
+				self._recoveryStartPosition = checkpoint.recoveryStartPosition
+
+				self._logger.logOneMessage('After reading the latest checkpoint, memory indices:')
+				self._logger.logOneMessage(JSON.stringify(self._indices, null, 4))
+				self._logger.logOneMessage('After reading the latest checkpoint, the size of memory indices: ' + Object.keys(self._indices).length)
+				self._logger.logOneMessage('')
+				self._logger.logOneMessage('')
+			}
+		} else {
+			var checkpointFileDescriptor = fs.openSync(checkpointFilePath, 'a+')
+			self._updateCheckpointFileHeaderSync(checkpointFileDescriptor, checkpointPositionFieldLen + checkpointLenFieldLen, 0)
+		}
+	}
+
 	function restoreMemoryIndices() {
 		var logs = convertToInt(fs.readdirSync(logFolder))
 
@@ -357,43 +415,13 @@ Storage.prototype._init = function() {
 		}
 	}
 
-	function loadCheckpointInfo() {
-		var exists = fs.existsSync(checkpointFilePath)
-		
-		if (exists) {
-			var checkpointFileDescriptor = fs.openSync(checkpointFilePath, 'r')
-			var checkpointPostionAndLengthRawData = self._readSync(checkpointFileDescriptor, 0, checkpointPositionFieldLen + checkpointLenFieldLen, false)
-			var checkpointPosition = bases.fromBase16(checkpointPostionAndLengthRawData.substr(0, checkpointPositionFieldLen))
-			var checkpointLength = bases.fromBase16(checkpointPostionAndLengthRawData.substr(checkpointPositionFieldLen, checkpointLenFieldLen))
-
-			if (checkpointLength != 0) {
-				var checkpointRawData = self._readSync(checkpointFileDescriptor, checkpointPosition, checkpointLength, false)
-				if (!self._verifyChecksum(checkpointRawData)) {
-					return
-				}
-				var checkpoint = JSON.parse(checkpointRawData.substr(SHA1Len))
-				self._indices = checkpoint.indices
-				self._recoveryStartPosition = checkpoint.recoveryStartPosition
-
-				self._logger.logOneMessage('After reading the latest checkpoint, memory indices:')
-				self._logger.logOneMessage(JSON.stringify(self._indices, null, 4))
-				self._logger.logOneMessage('After reading the latest checkpoint, the size of memory indices: ' + Object.keys(self._indices).length)
-				self._logger.logOneMessage('')
-				self._logger.logOneMessage('')
-			}
-		} else {
-			var checkpointFileDescriptor = fs.openSync(checkpointFilePath, 'a+')
-			self._updateCheckpointFileHeaderSync(checkpointFileDescriptor, checkpointPositionFieldLen + checkpointLenFieldLen, 0)
-		}
-	}
-
 	this._logger.recoveryStart()
 
 	// Create folders if they don't exist
 	mkdirp.sync(logFolder)
 	mkdirp.sync(checkpointFolder)
 
-	// If there is a checkpoint file, the load checkpoint info from the checkpoint file
+	// If there is a checkpoint file, then load checkpoint info from the checkpoint file
 	// Otherwise, create one file and initialize this file
 	loadCheckpointInfo()
 

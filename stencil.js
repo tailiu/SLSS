@@ -2,6 +2,7 @@ var Transport = require('./transport')
 var stream = require('./stream')
 var Logger = require('./logger')
 var Storage = require('./storage')
+var utils = require('./utils')
 
 const logInterval = 5000
 
@@ -28,7 +29,7 @@ Stencil.prototype.sendToStream = function(key, value) {
 	function createMetadata() {
 		var metadata = {
 			'timestamp': new Date(),
-			'source': this._id,
+			'source': self._id,
 			'destination': 'all'
 		}
 
@@ -91,7 +92,7 @@ Stencil.prototype._getAllMetadata = function(callback) {
 			for (var i in allMetadata[key].versions) {
 				var oneMetadata = {}
 				oneMetadata.key = key
-				oneMetadata.metadata = allMetadata[key].versions[i]
+				oneMetadata.metadata = allMetadata[key].versions[i].metadata
 				formatedMetadata.push(oneMetadata)
 			}
 		}

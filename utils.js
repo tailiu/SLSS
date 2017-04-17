@@ -6,13 +6,14 @@ function createHash(dataToHash, algorithm) {
 	return hash.digest('hex')
 }
 
-//Notice: the indexArr should contain index in the ascending order
+// Note: the indexArr should contain index in the ascending order
 exports.removeElementsFromArr = function(indexArr, arr) {
 	for (var i = indexArr.length - 1; i >= 0; i--) {
 		arr.splice(indexArr[i], 1)
 	}
 }
 
+// Note: assuming that keys are unique, for now we get index only by comparing key  
 exports.findIndexInPacketList = function(packets, packetMsg) {
 	for (var i = 0; i < packets.length; i++) {
 		if (packets[i].key == packetMsg.key) {
